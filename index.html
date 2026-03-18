@@ -521,10 +521,11 @@ body{background:var(--bg);color:var(--cream);font-family:'DM Sans',sans-serif;mi
   </div>
   <div class="go-body">
     <div class="code-display">
-      <div class="code-lbl">Code de la partie</div>
+      <div class="code-lbl">Identifiant de partie</div>
       <div class="code-value" id="displayCode">——</div>
-      <div class="code-sub">Partagez ce code avec les joueurs</div>
-      <button class="copy-btn" onclick="copyCode()">📋 Copier le code</button>
+      <div class="code-sub">Partagez le <strong>code complet</strong> ci-dessous avec les joueurs</div>
+      <textarea id="fullCodeArea" readonly onclick="this.select()" style="width:100%;margin-top:10px;background:rgba(255,255,255,.05);border:1px solid rgba(201,168,76,.25);border-radius:8px;padding:8px 10px;color:rgba(240,232,216,.6);font-family:'DM Sans',sans-serif;font-size:.65rem;resize:none;height:58px;line-height:1.4;word-break:break-all;outline:none;cursor:text"></textarea>
+      <button class="copy-btn" onclick="copyCode()">📋 Copier le code complet</button>
     </div>
 
     <div class="answer-reveal">
@@ -564,9 +565,9 @@ body{background:var(--bg);color:var(--cream);font-family:'DM Sans',sans-serif;mi
     <button class="go-close" onclick="closeJoinGame()">✕</button>
   </div>
   <div class="go-body">
-    <div class="gsec-title">Entrez le code de partie</div>
-    <div class="gsec-sub">Le maître du jeu vous a communiqué un code à 6 caractères.</div>
-    <input class="code-input" id="joinCodeInput" placeholder="ABC123" maxlength="6" oninput="this.value=this.value.toUpperCase()">
+    <div class="gsec-title">Collez le code de partie</div>
+    <div class="gsec-sub">Le maître du jeu vous a envoyé un code — collez-le ici (copier / coller).</div>
+    <textarea class="wine-input" id="joinCodeInput" placeholder="Collez le code ici…" rows="3" style="resize:none;font-size:.75rem;word-break:break-all" oninput=""></textarea>
 
     <div class="gsec-title" style="margin-top:4px">Votre prénom</div>
     <div class="gsec-sub">Pour figurer dans le classement.</div>
@@ -912,26 +913,62 @@ function closeOverlay() {
 /* ════════════════════════════════════
    GAME LOGIC — STORAGE
    ════════════════════════════════════ */
-function genCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  return Array.from({length:6}, ()=>chars[Math.floor(Math.random()*chars.length)]).join('');
+/* ── Encode / decode ──────────────────────────────────────────────
+   Le "code" de partie est un payload base64 auto-porteur.
+   Il contient toutes les données nécessaires → fonctionne entre
+   appareils sans serveur ni localStorage partagé.
+   Le "shortId" (6 chars) sert uniquement à identifier la partie
+   dans l'historique local et à clé les soumissions.
+   ─────────────────────────────────────────────────────────────── */
+function gameToCode(game) {
+  const payload = {
+    a: game.answerIdx,
+    r: game.region,
+    m: game.millesime,
+    c: game.choices,
+    t: game.createdAt || Date.now()
+  };
+  try { return btoa(unescape(encodeURIComponent(JSON.stringify(payload)))); }
+  catch(e) { return btoa(JSON.stringify(payload)); }
+}
+
+function codeToGame(raw) {
+  const code = raw.trim();
+  try {
+    let str;
+    try { str = decodeURIComponent(escape(atob(code))); }
+    catch(e) { str = atob(code); }
+    const p = JSON.parse(str);
+    if (typeof p.a !== 'number' || !Array.isArray(p.c)) return null;
+    return { answerIdx: p.a, region: p.r, millesime: p.m, choices: p.c, createdAt: p.t || Date.now(), code };
+  } catch(e) { return null; }
+}
+
+function shortId(fullCode) {
+  return fullCode.replace(/[^A-Za-z0-9]/g,'').slice(0,6).toUpperCase();
 }
 
 function saveGame(game) {
-  localStorage.setItem('wg_'+game.code, JSON.stringify(game));
-  // Track codes list
+  const sid = shortId(game.code);
+  localStorage.setItem('wg_'+sid, game.code); // store full code by shortId
   const codes = JSON.parse(localStorage.getItem('wg_codes')||'[]');
-  if(!codes.includes(game.code)) { codes.unshift(game.code); if(codes.length>10) codes.pop(); }
+  if(!codes.includes(sid)) { codes.unshift(sid); if(codes.length>10) codes.pop(); }
   localStorage.setItem('wg_codes', JSON.stringify(codes));
 }
 
-function loadGame(code) {
-  const s = localStorage.getItem('wg_'+code.toUpperCase().trim());
-  return s ? JSON.parse(s) : null;
+function loadGame(input) {
+  const raw = input.trim();
+  // Try as full base64 code first
+  const g = codeToGame(raw);
+  if (g) return g;
+  // Fallback: treat as shortId → look up full code in localStorage
+  const fullCode = localStorage.getItem('wg_'+raw.toUpperCase());
+  if (fullCode) return codeToGame(fullCode);
+  return null;
 }
 
 function saveSubmission(code, playerName, cepageIdx, region, millesime) {
-  const key = 'wgs_'+code;
+  const key = 'wgs_'+shortId(code);
   const subs = JSON.parse(localStorage.getItem(key)||'[]');
   const filtered = subs.filter(s=>s.playerName !== playerName);
   filtered.push({playerName, cepageIdx, region, millesime, submittedAt: Date.now()});
@@ -939,7 +976,7 @@ function saveSubmission(code, playerName, cepageIdx, region, millesime) {
 }
 
 function getSubmissions(code) {
-  return JSON.parse(localStorage.getItem('wgs_'+code)||'[]');
+  return JSON.parse(localStorage.getItem('wgs_'+shortId(code))||'[]');
 }
 
 function scoreAnswer(game, cepageIdx, region, millesime) {
@@ -1101,9 +1138,10 @@ function createStep(dir) {
 function launchGame() {
   const region = document.getElementById('inputRegion').value.trim();
   const millesime = document.getElementById('inputMillesime').value.trim();
-  const code = genCode();
   const choices = shuffle([gAnswerIdx, ...gDecoys]);
-  const game = {code, answerIdx: gAnswerIdx, region, millesime, choices, createdAt: Date.now()};
+  const draft = {answerIdx: gAnswerIdx, region, millesime, choices, createdAt: Date.now()};
+  const code = gameToCode(draft);
+  const game = {...draft, code};
   saveGame(game);
   gCurrentGame = game;
   closeCreateGame();
@@ -1121,7 +1159,9 @@ function shuffle(arr) {
    ════════════════════════════════════ */
 function openCodeOverlay(game) {
   gCurrentGame = game;
-  document.getElementById('displayCode').textContent = game.code;
+  const sid = shortId(game.code);
+  document.getElementById('displayCode').textContent = sid;
+  document.getElementById('fullCodeArea').value = game.code;
   document.getElementById('previewCount').textContent = game.choices.length;
   document.getElementById('revealCepage').textContent = DATA[game.answerIdx].nom;
   document.getElementById('revealDetail').textContent = `${game.region} — ${game.millesime}`;
@@ -1153,7 +1193,10 @@ function closeCodeOverlay() {
 
 function copyCode() {
   const code = gCurrentGame ? gCurrentGame.code : '';
-  navigator.clipboard.writeText(code).then(()=>showToast('Code copié : '+code)).catch(()=>showToast('Code : '+code));
+  const sid = shortId(code);
+  navigator.clipboard.writeText(code)
+    .then(()=>showToast('Code complet copié ! (ID : '+sid+')'))
+    .catch(()=>{ document.getElementById('fullCodeArea').select(); showToast('Sélectionnez et copiez le code'); });
 }
 
 function refreshSubCount() {
@@ -1182,13 +1225,13 @@ function closeJoinGame() {
 }
 
 function joinGame() {
-  const code = document.getElementById('joinCodeInput').value.toUpperCase().trim();
+  const code = document.getElementById('joinCodeInput').value.trim();
   const name = document.getElementById('joinNameInput').value.trim();
   const errEl = document.getElementById('joinError');
-  if (!code || code.length < 4) { errEl.textContent = 'Entrez un code de partie valide.'; errEl.style.display='block'; return; }
+  if (!code || code.length < 4) { errEl.textContent = 'Collez le code de partie reçu.'; errEl.style.display='block'; return; }
   if (!name) { errEl.textContent = 'Entrez votre prénom.'; errEl.style.display='block'; return; }
   const game = loadGame(code);
-  if (!game) { errEl.textContent = '❌ Partie introuvable. Vérifiez le code.'; errEl.style.display='block'; return; }
+  if (!game) { errEl.textContent = '❌ Code invalide. Assurez-vous d\'avoir copié le code complet.'; errEl.style.display='block'; return; }
   errEl.style.display = 'none';
   gCurrentGame = game;
   gPlayerName = name;
@@ -1460,14 +1503,14 @@ function renderRecentGames() {
   if (!codes.length) { el.style.display='none'; return; }
   el.style.display='block';
   list.innerHTML = '';
-  codes.slice(0,4).forEach(code => {
-    const game = loadGame(code);
+  codes.slice(0,4).forEach(sid => {
+    const game = loadGame(sid);
     if(!game) return;
-    const subs = getSubmissions(code);
+    const subs = getSubmissions(game.code);
     const correct = DATA[game.answerIdx];
     const div = document.createElement('div');
     div.className = 'recent-item';
-    div.innerHTML = `<div class="recent-code">${code}</div>
+    div.innerHTML = `<div class="recent-code">${sid}</div>
       <div class="recent-info">
         <div class="recent-wine">${correct.nom} — ${game.region}</div>
         <div class="recent-meta">${game.millesime} · Créée le ${new Date(game.createdAt).toLocaleDateString('fr')}</div>
